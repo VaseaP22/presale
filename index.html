@@ -874,6 +874,10 @@
         saleStatus.textContent = 'Connect your wallet first.';
         return;
       }
+      if (typeof state.provider.signAndSendTransaction !== 'function' && typeof state.provider.signTransaction !== 'function') {
+        saleStatus.textContent = 'This wallet provider cannot sign transactions on this page.';
+        return;
+      }
 
       const amount = Number(amountInput.value || 0);
       if (!(amount > 0)) {
@@ -882,36 +886,57 @@
       }
 
       try {
-        saleStatus.textContent = 'Preparing transaction...';
-
-        const connection = new window.solanaWeb3.Connection(APP_CONFIG.rpcUrl, 'confirmed');
+        const connection = new window.solanaWeb3.Connection(APP_CONFIG.rpcUrl, {
+          commitment: 'confirmed',
+          confirmTransactionInitialTimeout: 60000
+        });
         const fromPubkey = new window.solanaWeb3.PublicKey(state.pubkey);
         const toPubkey = new window.solanaWeb3.PublicKey(APP_CONFIG.treasuryAddress);
         const lamports = Math.round(amount * window.solanaWeb3.LAMPORTS_PER_SOL);
 
-        const tx = new window.solanaWeb3.Transaction().add(
-          window.solanaWeb3.SystemProgram.transfer({
-            fromPubkey,
-            toPubkey,
-            lamports
-          })
-        );
+        saleStatus.textContent = 'Checking wallet balance...';
+        const balance = await connection.getBalance(fromPubkey, 'confirmed');
+        if (balance <= lamports) {
+          throw new Error('Insufficient SOL balance for this payment and network fee.');
+        }
 
-        const latest = await connection.getLatestBlockhash('finalized');
-        tx.feePayer = fromPubkey;
-        tx.recentBlockhash = latest.blockhash;
+        saleStatus.textContent = 'Preparing wallet confirmation...';
+        const latest = await connection.getLatestBlockhash('confirmed');
+        const transferIx = window.solanaWeb3.SystemProgram.transfer({
+          fromPubkey,
+          toPubkey,
+          lamports
+        });
+
+        const messageV0 = new window.solanaWeb3.TransactionMessage({
+          payerKey: fromPubkey,
+          recentBlockhash: latest.blockhash,
+          instructions: [transferIx]
+        }).compileToV0Message();
+        const versionedTx = new window.solanaWeb3.VersionedTransaction(messageV0);
 
         let signature;
         if (typeof state.provider.signAndSendTransaction === 'function') {
-          const result = await state.provider.signAndSendTransaction(tx);
-          signature = result.signature || result;
-        } else if (typeof state.provider.signTransaction === 'function') {
-          const signed = await state.provider.signTransaction(tx);
-          signature = await connection.sendRawTransaction(signed.serialize());
+          const result = await state.provider.signAndSendTransaction(versionedTx, {
+            maxRetries: 3,
+            skipPreflight: false,
+            preflightCommitment: 'confirmed'
+          });
+          signature = result && result.signature ? result.signature : result;
         } else {
-          throw new Error('This wallet does not support transaction signing on this page.');
+          const legacyTx = new window.solanaWeb3.Transaction({
+            feePayer: fromPubkey,
+            recentBlockhash: latest.blockhash
+          }).add(transferIx);
+          const signed = await state.provider.signTransaction(legacyTx);
+          signature = await connection.sendRawTransaction(signed.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+            preflightCommitment: 'confirmed'
+          });
         }
 
+        saleStatus.textContent = 'Waiting for confirmation...';
         await connection.confirmTransaction({
           signature,
           blockhash: latest.blockhash,
@@ -931,9 +956,14 @@
           claimed:false
         });
         setHistory(items);
-        saleStatus.textContent = 'Purchase completed and saved locally in this browser.';
+        saleStatus.textContent = 'Purchase confirmed and saved locally in this browser.';
       } catch (error) {
-        saleStatus.textContent = error && error.message ? error.message : 'Transaction failed or was cancelled.';
+        const message = error && error.message ? error.message : 'Transaction failed or was cancelled.';
+        if (/403|429|fetch|network|failed to fetch/i.test(message)) {
+          saleStatus.textContent = 'RPC request failed before wallet confirmation. Replace rpcUrl with a private Solana RPC endpoint and try again.';
+        } else {
+          saleStatus.textContent = message;
+        }
       }
     }
 
