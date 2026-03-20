@@ -153,6 +153,8 @@
     .contract-box{padding:14px 16px;border-radius:16px;background:#081120;border:1px solid var(--line);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all;font-size:13px;flex:1}
     .socials{display:flex;gap:12px;flex-wrap:wrap}
     .social{padding:12px 16px;border-radius:16px;background:rgba(255,255,255,.05);border:1px solid var(--line);font-weight:800}
+    .mobile-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .mobile-note{font-size:12px;color:var(--muted);line-height:1.65;margin-top:10px}
     .footer{padding:20px 0 48px;color:var(--muted);font-size:13px}
     .footer .card{padding:18px 20px}
     .fine{line-height:1.7}
@@ -233,12 +235,12 @@
       <div class="container stats-grid">
         <div class="card stat">
           <div class="stat-label">Raised</div>
-          <div class="stat-value" data-count="200">$0</div>
+          <div class="stat-value" id="raisedStat">$0</div>
           <div class="stat-sub">Early momentum from the first buyers</div>
         </div>
         <div class="card stat">
           <div class="stat-label">Goal</div>
-          <div class="stat-value" data-count="5000000">$0</div>
+          <div class="stat-value" id="goalStat">$5,000,000</div>
           <div class="stat-sub">Main presale funding target</div>
         </div>
         <div class="card stat">
@@ -475,6 +477,8 @@
     const saleStatus = document.getElementById('saleStatus');
     const progressBar = document.getElementById('progressBar');
     const raisedText = document.getElementById('raisedText');
+    const raisedStat = document.getElementById('raisedStat');
+    const goalStat = document.getElementById('goalStat');
     const walletField = document.getElementById('walletField');
     const currencySelect = document.getElementById('currencySelect');
     const amountInput = document.getElementById('amountInput');
@@ -489,6 +493,9 @@
     const claimedTotal = document.getElementById('claimedTotal');
     const claimHint = document.getElementById('claimHint');
     const claimWindowLabel = document.getElementById('claimWindowLabel');
+    const openPhantomBtn = document.getElementById('openPhantomBtn');
+    const openSolflareBtn = document.getElementById('openSolflareBtn');
+    const mobileWalletNote = document.getElementById('mobileWalletNote');
     const contractBox = document.getElementById('contractBox');
     const copyContractBtn = document.getElementById('copyContractBtn');
 
@@ -513,7 +520,7 @@
     async function connectWallet() {
       const detected = getInjectedProvider();
       if (!detected) {
-        saleStatus.textContent = 'No wallet extension detected. Use Phantom, Solflare or Backpack over HTTPS.';
+        saleStatus.textContent = isMobileDevice() ? 'No injected wallet found in this mobile browser. Use Open in Phantom or Open in Solflare.' : 'No wallet extension detected. Use Phantom, Solflare or Backpack over HTTPS.';
         return;
       }
       try {
@@ -543,9 +550,30 @@
     function getHistory() {
       try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
     }
+
+    function getTotalRaisedUsd() {
+      const purchasesUsd = getHistory().reduce((sum, item) => {
+        if (Number.isFinite(Number(item.usdValue))) return sum + Number(item.usdValue);
+        const amount = Number(item.amount || 0);
+        const currency = item.currency || 'SOL';
+        const fallbackUsd = currency === 'SOL' ? amount * APP_CONFIG.solUsd : amount * APP_CONFIG.usdcUsd;
+        return sum + fallbackUsd;
+      }, 0);
+      return APP_CONFIG.raisedUsd + purchasesUsd;
+    }
+
+    function refreshRaisedUi() {
+      const totalRaised = getTotalRaisedUsd();
+      const pct = Math.max(0, Math.min(100, totalRaised / APP_CONFIG.goalUsd * 100));
+      progressBar.style.width = pct + '%';
+      raisedText.textContent = formatUsd(totalRaised);
+      if (raisedStat) raisedStat.textContent = formatUsd(totalRaised);
+      if (goalStat) goalStat.textContent = formatUsd(APP_CONFIG.goalUsd);
+    }
     function setHistory(items) {
       localStorage.setItem(LS_KEY, JSON.stringify(items));
       renderHistory();
+      refreshRaisedUi();
     }
     function renderHistory() {
       const items = getHistory();
@@ -554,7 +582,7 @@
         <div class="history-item">
           <div>
             <strong>${item.amount} ${item.currency}</strong>
-            <div class="muted">${item.when}</div>
+            <div class="muted">${formatUsd(Number(item.usdValue || 0))} · ${item.when}</div>
           </div>
           <div style="text-align:right">
             <strong>${item.tokens}</strong>
@@ -630,6 +658,7 @@
         items.push({
           amount: formatNum(amount, 4),
           currency,
+          usdValue: Number(usd.toFixed(2)),
           tokenAmount: Number(tokens.toFixed(8)),
           tokens: formatNum(tokens, 2) + ' TRUMPRO',
           when: new Date().toLocaleString(),
@@ -668,23 +697,6 @@
       document.getElementById('seconds').textContent = String(seconds).padStart(2, '0');
     }
 
-    function animateStats() {
-      document.querySelectorAll('[data-count]').forEach(el => {
-        const end = Number(el.dataset.count || '0');
-        const start = 0;
-        const duration = 1200;
-        const t0 = performance.now();
-        function tick(t) {
-          const p = Math.min(1, (t - t0) / duration);
-          const eased = 1 - Math.pow(1 - p, 3);
-          const value = start + (end - start) * eased;
-          el.textContent = formatUsd(value);
-          if (p < 1) requestAnimationFrame(tick);
-        }
-        requestAnimationFrame(tick);
-      });
-    }
-
     async function claimTokens() {
       const now = new Date();
       const end = new Date(APP_CONFIG.presaleEnd);
@@ -711,13 +723,10 @@
     }
 
     function initUi() {
-      const pct = Math.max(0, Math.min(100, APP_CONFIG.raisedUsd / APP_CONFIG.goalUsd * 100));
-      progressBar.style.width = pct + '%';
-      raisedText.textContent = formatUsd(APP_CONFIG.raisedUsd);
       updateQuote();
       renderHistory();
+      refreshRaisedUi();
       updateClaimUi();
-      animateStats();
       updateCountdown();
       setInterval(updateCountdown, 1000);
     }
@@ -726,6 +735,8 @@
     currencySelect.addEventListener('change', updateQuote);
     connectBtn.addEventListener('click', connectWallet);
     disconnectBtn.addEventListener('click', disconnectWallet);
+    openPhantomBtn.addEventListener('click', () => openMobileWalletBrowser('phantom'));
+    openSolflareBtn.addEventListener('click', () => openMobileWalletBrowser('solflare'));
     buyBtn.addEventListener('click', buyNow);
     clearHistoryBtn.addEventListener('click', () => { setHistory([]); updateClaimUi(); });
     claimBtn.addEventListener('click', claimTokens);
