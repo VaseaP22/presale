@@ -285,6 +285,23 @@
     .footer-grid {
       display:flex; justify-content:space-between; gap:14px; flex-wrap:wrap; align-items:center;
     }
+
+    .pay-modal-backdrop {
+      position:fixed; inset:0; background:rgba(3,7,14,.74); backdrop-filter:blur(10px);
+      display:none; align-items:center; justify-content:center; padding:18px; z-index:120;
+    }
+    .pay-modal-backdrop.active { display:flex; }
+    .pay-modal { width:min(560px, 100%); padding:22px; }
+    .pay-modal-top { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:16px; }
+    .pay-grid { display:grid; grid-template-columns:220px 1fr; gap:18px; align-items:start; }
+    .qr-box {
+      min-height:220px; display:grid; place-items:center; padding:14px; border-radius:22px;
+      background:#fff; border:1px solid rgba(255,255,255,.16);
+    }
+    .pay-url { word-break:break-all; font-size:12px; line-height:1.5; color:var(--muted); }
+    .pay-actions { display:grid; gap:10px; margin-top:16px; }
+    .hint-list { display:grid; gap:8px; margin-top:12px; color:var(--muted); font-size:14px; line-height:1.6; }
+
     .disclaimer {
       margin-top:14px; font-size:12px; color:var(--muted); line-height:1.7;
     }
@@ -516,7 +533,7 @@
 
           <div style="display:grid; gap:10px; margin-top:14px;">
             <button class="btn btn-primary btn-block" id="buyBtn" type="button">Buy Stage 1 with SOL</button>
-            <div class="small">Accepted currency: SOL. Token delivery and final claim distribution depend on your final launch setup.</div>
+            <div class="small">Accepted currency: SOL via Solana Pay. Token delivery and final claim distribution depend on your final launch setup.</div>
           </div>
 
           <div class="history">
@@ -566,6 +583,39 @@
   </footer>
 
   <script src="https://unpkg.com/@solana/web3.js@1.98.4/lib/index.iife.min.js"></script>
+
+  <div class="pay-modal-backdrop" id="payModal">
+    <div class="pay-modal card">
+      <div class="pay-modal-top">
+        <div>
+          <div class="tag"><span class="dot"></span> Solana Pay Checkout</div>
+          <h3 style="margin:12px 0 0; font-size:28px;">Complete Your Payment</h3>
+        </div>
+        <button class="btn btn-secondary" id="closePayModalBtn" type="button">Close</button>
+      </div>
+      <div class="pay-grid">
+        <div class="qr-box"><div id="payQr"></div></div>
+        <div>
+          <div class="small">Amount</div>
+          <div style="font-size:32px; font-weight:900; line-height:1; margin-top:6px;" id="payAmountText">0 SOL</div>
+          <div class="small" style="margin-top:10px;">Estimated tokens</div>
+          <div style="font-size:22px; font-weight:800; margin-top:4px;" id="payTokenText">0 TRUMPRO</div>
+          <div class="hint-list">
+            <div>• Mobile: open the payment request inside Phantom or Solflare.</div>
+            <div>• Desktop: scan the QR from your wallet app or open the payment link.</div>
+            <div>• This static build records completed payments locally in this browser.</div>
+          </div>
+          <div class="pay-actions">
+            <a class="btn btn-primary btn-block" id="openPayLinkBtn" href="#" target="_blank" rel="noopener">Open Solana Pay</a>
+            <button class="btn btn-secondary btn-block" id="copyPayLinkBtn" type="button">Copy Payment Link</button>
+            <button class="btn btn-secondary btn-block" id="markPaidBtn" type="button">I Completed Payment</button>
+          </div>
+          <div class="pay-url" id="payUrlText" style="margin-top:12px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const APP_CONFIG = {
       tokenName: 'TRUMP ROCKET',
@@ -578,7 +628,7 @@
       presaleEnd: '2026-06-20T23:59:59',
       treasuryAddress: '9nqMw3R8hkt7CSpTkqxF8pCKGYMpiwefT9JmSbT7KCjC',
       contractAddress: 'SET_FINAL_SOLANA_TOKEN_ADDRESS',
-      rpcUrl: 'https://api.mainnet-beta.solana.com',
+      merchantLabel: 'TRUMP ROCKET',
       previewMode: false
     };
 
@@ -611,6 +661,15 @@
     const mobileWalletNote = document.getElementById('mobileWalletNote');
     const contractBox = document.getElementById('contractBox');
     const copyContractBtn = document.getElementById('copyContractBtn');
+    const payModal = document.getElementById('payModal');
+    const closePayModalBtn = document.getElementById('closePayModalBtn');
+    const payQr = document.getElementById('payQr');
+    const payAmountText = document.getElementById('payAmountText');
+    const payTokenText = document.getElementById('payTokenText');
+    const openPayLinkBtn = document.getElementById('openPayLinkBtn');
+    const copyPayLinkBtn = document.getElementById('copyPayLinkBtn');
+    const markPaidBtn = document.getElementById('markPaidBtn');
+    const payUrlText = document.getElementById('payUrlText');
     const treasuryFooter = document.getElementById('treasuryFooter');
     const priceStat = document.getElementById('priceStat');
     const nextPriceStat = document.getElementById('nextPriceStat');
@@ -852,6 +911,61 @@
       }
     }
 
+
+    function buildSolanaPayUrl(amount) {
+      const reference = `TRUMPRO-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      const recipient = APP_CONFIG.treasuryAddress;
+      const params = new URLSearchParams({
+        amount: String(Number(amount.toFixed(4))),
+        reference,
+        label: APP_CONFIG.merchantLabel,
+        message: `${APP_CONFIG.tokenName} presale contribution`,
+        memo: `${APP_CONFIG.tokenSymbol} presale`
+      });
+      return { url: `solana:${recipient}?${params.toString()}`, reference };
+    }
+
+    function openPayModal(payment) {
+      state.currentPayment = payment;
+      payAmountText.textContent = formatNum(payment.amount, 4) + ' SOL';
+      payTokenText.textContent = formatNum(payment.tokenAmount, 2) + ' ' + APP_CONFIG.tokenSymbol;
+      openPayLinkBtn.href = payment.url;
+      payUrlText.textContent = payment.url;
+      if (state.qrInstance && payQr) payQr.innerHTML = '';
+      if (typeof QRCode !== 'undefined') {
+        state.qrInstance = new QRCode(payQr, { text: payment.url, width: 190, height: 190 });
+      } else {
+        payQr.innerHTML = '<div style="color:#0f172a;font-weight:800;text-align:center;">QR unavailable</div>';
+      }
+      payModal.classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closePayModal() {
+      payModal.classList.remove('active');
+      document.body.style.overflow = '';
+    }
+
+    function finalizeLocalPayment() {
+      if (!state.currentPayment) return;
+      const payment = state.currentPayment;
+      const items = getHistory();
+      items.push({
+        amount: Number(payment.amount.toFixed(4)),
+        usdValue: payment.usdValue,
+        tokenAmount: payment.tokenAmount,
+        tokensText: formatNum(payment.tokenAmount, 2) + ' ' + APP_CONFIG.tokenSymbol,
+        when: new Date().toLocaleString(),
+        signature: 'Solana Pay',
+        claimed: false,
+        reference: payment.reference
+      });
+      setHistory(items);
+      saleStatus.textContent = 'Payment request recorded locally in this browser.';
+      closePayModal();
+      state.currentPayment = null;
+    }
+
     async function buyNow() {
       const phase = getSalePhase();
       if (phase === 'before') {
@@ -862,20 +976,8 @@
         saleStatus.textContent = 'The presale has ended. Buying is disabled.';
         return;
       }
-      if (!window.solanaWeb3) {
-        saleStatus.textContent = 'Solana library failed to load.';
-        return;
-      }
       if (!validateTreasuryAddress()) {
         saleStatus.textContent = 'Treasury address is invalid. Replace it before publishing.';
-        return;
-      }
-      if (!state.provider || !state.pubkey) {
-        saleStatus.textContent = 'Connect your wallet first.';
-        return;
-      }
-      if (typeof state.provider.signAndSendTransaction !== 'function' && typeof state.provider.signTransaction !== 'function') {
-        saleStatus.textContent = 'This wallet provider cannot sign transactions on this page.';
         return;
       }
 
@@ -885,86 +987,11 @@
         return;
       }
 
-      try {
-        const connection = new window.solanaWeb3.Connection(APP_CONFIG.rpcUrl, {
-          commitment: 'confirmed',
-          confirmTransactionInitialTimeout: 60000
-        });
-        const fromPubkey = new window.solanaWeb3.PublicKey(state.pubkey);
-        const toPubkey = new window.solanaWeb3.PublicKey(APP_CONFIG.treasuryAddress);
-        const lamports = Math.round(amount * window.solanaWeb3.LAMPORTS_PER_SOL);
-
-        saleStatus.textContent = 'Checking wallet balance...';
-        const balance = await connection.getBalance(fromPubkey, 'confirmed');
-        if (balance <= lamports) {
-          throw new Error('Insufficient SOL balance for this payment and network fee.');
-        }
-
-        saleStatus.textContent = 'Preparing wallet confirmation...';
-        const latest = await connection.getLatestBlockhash('confirmed');
-        const transferIx = window.solanaWeb3.SystemProgram.transfer({
-          fromPubkey,
-          toPubkey,
-          lamports
-        });
-
-        const messageV0 = new window.solanaWeb3.TransactionMessage({
-          payerKey: fromPubkey,
-          recentBlockhash: latest.blockhash,
-          instructions: [transferIx]
-        }).compileToV0Message();
-        const versionedTx = new window.solanaWeb3.VersionedTransaction(messageV0);
-
-        let signature;
-        if (typeof state.provider.signAndSendTransaction === 'function') {
-          const result = await state.provider.signAndSendTransaction(versionedTx, {
-            maxRetries: 3,
-            skipPreflight: false,
-            preflightCommitment: 'confirmed'
-          });
-          signature = result && result.signature ? result.signature : result;
-        } else {
-          const legacyTx = new window.solanaWeb3.Transaction({
-            feePayer: fromPubkey,
-            recentBlockhash: latest.blockhash
-          }).add(transferIx);
-          const signed = await state.provider.signTransaction(legacyTx);
-          signature = await connection.sendRawTransaction(signed.serialize(), {
-            skipPreflight: false,
-            maxRetries: 3,
-            preflightCommitment: 'confirmed'
-          });
-        }
-
-        saleStatus.textContent = 'Waiting for confirmation...';
-        await connection.confirmTransaction({
-          signature,
-          blockhash: latest.blockhash,
-          lastValidBlockHeight: latest.lastValidBlockHeight
-        }, 'confirmed');
-
-        const usdValue = Number((amount * 150).toFixed(2));
-        const tokenAmount = Number((usdValue / APP_CONFIG.tokenPriceUsd).toFixed(8));
-        const items = getHistory();
-        items.push({
-          amount: Number(amount.toFixed(4)),
-          usdValue,
-          tokenAmount,
-          tokensText: formatNum(tokenAmount, 2) + ' ' + APP_CONFIG.tokenSymbol,
-          when: new Date().toLocaleString(),
-          signature: shortAddress(String(signature)),
-          claimed:false
-        });
-        setHistory(items);
-        saleStatus.textContent = 'Purchase confirmed and saved locally in this browser.';
-      } catch (error) {
-        const message = error && error.message ? error.message : 'Transaction failed or was cancelled.';
-        if (/403|429|fetch|network|failed to fetch/i.test(message)) {
-          saleStatus.textContent = 'RPC request failed before wallet confirmation. Replace rpcUrl with a private Solana RPC endpoint and try again.';
-        } else {
-          saleStatus.textContent = message;
-        }
-      }
+      const usdValue = Number((amount * 150).toFixed(2));
+      const tokenAmount = Number((usdValue / APP_CONFIG.tokenPriceUsd).toFixed(8));
+      const payment = { ...buildSolanaPayUrl(amount), amount, usdValue, tokenAmount };
+      saleStatus.textContent = 'Solana Pay checkout ready. Open the payment request and complete it in your wallet.';
+      openPayModal(payment);
     }
 
     function updateCountdown() {
@@ -1066,7 +1093,7 @@
       updateCountdown();
 
       if (isMobileDevice()) {
-        mobileWalletNote.textContent = 'Mobile detected. Open this page inside Phantom or Solflare for the most reliable wallet connection.';
+        mobileWalletNote.textContent = 'Mobile detected. Open this page inside Phantom or Solflare for the most reliable Solana Pay checkout.';
       }
 
       setInterval(updateCountdown, 1000);
@@ -1081,6 +1108,17 @@
     openPhantomBtn.addEventListener('click', () => openMobileWalletBrowser('phantom'));
     openSolflareBtn.addEventListener('click', () => openMobileWalletBrowser('solflare'));
     copyContractBtn.addEventListener('click', copyContract);
+    closePayModalBtn.addEventListener('click', closePayModal);
+    payModal.addEventListener('click', (e) => { if (e.target === payModal) closePayModal(); });
+    copyPayLinkBtn.addEventListener('click', async () => {
+      if (!state.currentPayment) return;
+      try {
+        await navigator.clipboard.writeText(state.currentPayment.url);
+        copyPayLinkBtn.textContent = 'Copied';
+        setTimeout(() => copyPayLinkBtn.textContent = 'Copy Payment Link', 1200);
+      } catch {}
+    });
+    markPaidBtn.addEventListener('click', finalizeLocalPayment);
 
     refreshProviderState();
     initUi();
