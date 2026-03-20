@@ -497,7 +497,7 @@
               <button class="btn btn-secondary" id="openSolflareBtn" type="button">Open in Solflare</button>
             </div>
             <div class="small" id="mobileWalletNote">
-              On mobile, open this page inside your wallet app browser for the most reliable connection flow.
+              On mobile, use one wallet app browser for the whole flow. Phantom is the simplest first option; if it fails, try Solflare.
             </div>
           </div>
 
@@ -510,15 +510,20 @@
             <div>
               <div class="small">Estimated $TRUMPRO allocation</div>
               <strong id="tokenQuote">0</strong>
+              <div class="small" id="quoteMeta" style="margin-top:8px;">Loading live SOL price...</div>
             </div>
             <div class="muted">TRUMPRO</div>
           </div>
 
           <div style="display:grid; gap:10px; margin-top:14px;">
+            <div class="wallet-box" style="font-size:13px;line-height:1.6">
+              <strong>Payment destination</strong>
+              <div id="treasuryNotice" class="small" style="margin-top:6px;word-break:break-all;">Funds are sent directly to this treasury wallet: 9nqMw3R8hkt7CSpTkqxF8pCKGYMpiwefT9JmSbT7KCjC</div>
+              <div class="small" style="margin-top:6px;">Review the destination wallet carefully before approving the transaction.</div>
+            </div>
             <button class="btn btn-primary btn-block" id="buyBtn" type="button">Buy Stage 1 with SOL</button>
-            <button class="btn btn-secondary btn-block" id="rpcTestBtn" type="button" style="margin-top:10px">Test Wallet + RPC</button>
             <div class="wallet-box" id="debugBox" style="margin-top:10px;font-size:13px;line-height:1.6"><strong>Diagnostics</strong><div id="debugText" class="small" style="margin-top:6px">Ready.</div></div>
-            <div class="small">Accepted currency: SOL. Token delivery and final claim distribution depend on your final launch setup.</div>
+            <div class="small">Accepted currency: SOL. This page sends SOL directly to the treasury wallet above. Token delivery and any final distribution depend on your separate launch, backend and claim setup.</div>
           </div>
 
           <div class="history">
@@ -537,23 +542,23 @@
             <div class="history-item">
               <div>
                 <strong>Claimable now</strong>
-                <div class="small">Local static balance</div>
+                <div class="small">Browser-saved estimate only</div>
               </div>
               <div><strong id="claimableNow">0 TRUMPRO</strong></div>
             </div>
             <div class="history-item">
               <div>
                 <strong>Already claimed</strong>
-                <div class="small">Saved in this browser</div>
+                <div class="small">Marked locally in this browser</div>
               </div>
               <div><strong id="claimedTotal">0 TRUMPRO</strong></div>
             </div>
             <button class="btn btn-secondary btn-block" id="claimBtn" type="button">Unlock Claim After Presale</button>
-            <div class="small" id="claimHint" style="margin-top:10px;">Claim access opens automatically once Stage 1 closes.</div>
+            <div class="small" id="claimHint" style="margin-top:10px;">Claim access opens automatically once Stage 1 closes. This button only marks browser-saved entries as claimed.</div>
           </div>
 
           <div class="disclaimer">
-            Raised volume, purchase history and claim state in this build are saved in this browser. For a full production presale, finalize your on-chain claim and backend verification flow.
+            SOL to USD estimates use a live market price feed when available and automatically fall back to a cached reference if the price service is unavailable.
           </div>
         </aside>
       </div>
@@ -586,7 +591,13 @@
     };
 
     const LS_KEY = 'trumpro_local_orders_v4';
+    const FALLBACK_SOL_USD = 150;
     const state = { provider:null, pubkey:null, label:'' };
+    const marketState = {
+      solUsd: FALLBACK_SOL_USD,
+      updatedAt: null,
+      source: 'Fallback reference'
+    };
 
     const phaseLabel = document.getElementById('phaseLabel');
     const saleStatus = document.getElementById('saleStatus');
@@ -612,16 +623,17 @@
     const openPhantomBtn = document.getElementById('openPhantomBtn');
     const openSolflareBtn = document.getElementById('openSolflareBtn');
     const mobileWalletNote = document.getElementById('mobileWalletNote');
+    const treasuryNotice = document.getElementById('treasuryNotice');
     const contractBox = document.getElementById('contractBox');
     const copyContractBtn = document.getElementById('copyContractBtn');
     const treasuryFooter = document.getElementById('treasuryFooter');
-    const rpcTestBtn = document.getElementById('rpcTestBtn');
     const debugText = document.getElementById('debugText');
     const priceStat = document.getElementById('priceStat');
     const nextPriceStat = document.getElementById('nextPriceStat');
 
     contractBox.textContent = APP_CONFIG.contractAddress;
     treasuryFooter.textContent = APP_CONFIG.treasuryAddress;
+    treasuryNotice.textContent = 'Funds are sent directly to this treasury wallet: ' + APP_CONFIG.treasuryAddress;
     priceStat.textContent = formatUsd(APP_CONFIG.tokenPriceUsd, 5);
     nextPriceStat.textContent = formatUsd(APP_CONFIG.nextStagePriceUsd, 5);
     goalStat.textContent = formatUsd(APP_CONFIG.goalUsd, 0);
@@ -638,6 +650,58 @@
 
     function formatNum(n, max = 2) {
       return new Intl.NumberFormat('en-US', { maximumFractionDigits:max }).format(Number(n || 0));
+    }
+
+    function formatRelativeTime(date) {
+      if (!date) return 'not updated yet';
+      const diffMs = Date.now() - date.getTime();
+      const diffSec = Math.max(0, Math.round(diffMs / 1000));
+      if (diffSec < 60) return 'just now';
+      if (diffSec < 3600) return Math.floor(diffSec / 60) + ' min ago';
+      return Math.floor(diffSec / 3600) + ' h ago';
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url, { cache:'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.json();
+    }
+
+    async function refreshSolPrice() {
+      const quoteMeta = document.getElementById('quoteMeta');
+      if (quoteMeta) {
+        quoteMeta.textContent = 'Loading live SOL price...';
+      }
+      try {
+        let price = null;
+        let source = '';
+
+        try {
+          const cg = await fetchJson('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+          if (cg && cg.solana && Number(cg.solana.usd) > 0) {
+            price = Number(cg.solana.usd);
+            source = 'CoinGecko';
+          }
+        } catch {}
+
+        if (!(price > 0)) {
+          const cb = await fetchJson('https://api.coinbase.com/v2/prices/SOL-USD/spot');
+          const spot = cb && cb.data ? Number(cb.data.amount) : 0;
+          if (spot > 0) {
+            price = spot;
+            source = 'Coinbase';
+          }
+        }
+
+        if (!(price > 0)) throw new Error('No live SOL price available');
+
+        marketState.solUsd = price;
+        marketState.updatedAt = new Date();
+        marketState.source = source;
+      } catch (error) {
+        marketState.source = marketState.updatedAt ? 'Cached reference' : 'Fallback reference';
+      }
+      updateQuote();
     }
 
     function shortAddress(value) {
@@ -730,9 +794,16 @@
 
     function updateQuote() {
       const solAmount = Number(amountInput.value || 0);
-      const usdValue = solAmount * 150;
+      const usdRate = Number(marketState.solUsd || FALLBACK_SOL_USD);
+      const usdValue = solAmount * usdRate;
       const tokens = usdValue > 0 ? usdValue / APP_CONFIG.tokenPriceUsd : 0;
       tokenQuote.textContent = formatNum(tokens, 2);
+      const quoteMeta = document.getElementById('quoteMeta');
+      if (quoteMeta) {
+        const sourceLabel = marketState.source || 'Reference';
+        const freshness = formatRelativeTime(marketState.updatedAt);
+        quoteMeta.textContent = 'Live SOL price: 1 SOL = ' + formatUsd(usdRate, 2) + ' · Source: ' + sourceLabel + ' · Updated ' + freshness + ' · Estimated value: ' + formatUsd(usdValue) + '.';
+      }
     }
 
     function renderHistory() {
@@ -769,20 +840,20 @@
       const totals = getClaimTotals();
       claimableNow.textContent = formatNum(totals.claimable, 2) + ' ' + APP_CONFIG.tokenSymbol;
       claimedTotal.textContent = formatNum(totals.claimed, 2) + ' ' + APP_CONFIG.tokenSymbol;
-      claimWindowLabel.textContent = claimOpen ? 'Claim is live' : 'Available after presale';
+      claimWindowLabel.textContent = claimOpen ? 'Local claim tracker active' : 'Available after presale';
 
       if (!claimOpen) {
         claimBtn.disabled = true;
         claimBtn.textContent = 'Claim After Presale';
-        claimHint.textContent = 'Claims unlock automatically after the presale end date.';
+        claimHint.textContent = 'This local tracker unlocks after the presale end date. It does not send tokens on-chain.';
       } else if (totals.claimable <= 0) {
         claimBtn.disabled = true;
         claimBtn.textContent = 'Nothing To Claim';
-        claimHint.textContent = 'All locally tracked purchases have already been marked as claimed.';
+        claimHint.textContent = 'All browser-saved purchases have already been marked as claimed locally.';
       } else {
         claimBtn.disabled = false;
-        claimBtn.textContent = 'Claim Tokens';
-        claimHint.textContent = 'This static version marks your local browser purchases as claimed.';
+        claimBtn.textContent = 'Mark Local Claim';
+        claimHint.textContent = 'This static version only marks browser-saved purchases as claimed. It does not distribute tokens on-chain.';
       }
       claimBtn.style.opacity = claimBtn.disabled ? '.68' : '1';
       claimBtn.style.cursor = claimBtn.disabled ? 'not-allowed' : 'pointer';
@@ -814,26 +885,6 @@
       debugText.innerHTML = Array.isArray(lines) ? lines.join('<br>') : String(lines || '');
     }
 
-    async function testRpcAndWallet() {
-      const detected = getInjectedProvider();
-      const lines = [
-        'Secure context: ' + (isSecureContextForWallet() ? 'yes' : 'no'),
-        'Phase: ' + getSalePhase(),
-        'Wallet detected: ' + (detected ? detected.label : 'no'),
-        'Wallet connected: ' + (state.pubkey ? 'yes' : 'no'),
-        'RPC URL: ' + APP_CONFIG.rpcUrl.replace(/api-key=[^&]+/, 'api-key=***')
-      ];
-      try {
-        const connection = new window.solanaWeb3.Connection(APP_CONFIG.rpcUrl, 'processed');
-        const latest = await connection.getLatestBlockhash('processed');
-        lines.push('RPC latest blockhash: ok');
-        lines.push('Last valid block height: ' + latest.lastValidBlockHeight);
-      } catch (e) {
-        lines.push('RPC error: ' + (e && e.message ? e.message : 'unknown error'));
-      }
-      setDebug(lines);
-    }
-
     async function connectWallet() {
       if (!isSecureContextForWallet()) {
         saleStatus.textContent = 'Open this site on HTTPS, localhost or 127.0.0.1 to use browser wallet injection.';
@@ -842,7 +893,7 @@
       const detected = getInjectedProvider();
       if (!detected) {
         saleStatus.textContent = isMobileDevice()
-          ? 'No injected wallet found in this mobile browser. Use Open in Phantom or Open in Solflare.'
+          ? 'No injected wallet found in this mobile browser. Open the page inside Phantom first, or try Solflare if needed.'
           : 'No wallet extension detected. Install Phantom, Solflare or Backpack.';
         return;
       }
@@ -918,6 +969,24 @@
         return;
       }
 
+      const usdRate = Number(marketState.solUsd || FALLBACK_SOL_USD);
+      const estimatedUsdValue = Number((amount * usdRate).toFixed(2));
+      const estimatedTokenAmount = Number((estimatedUsdValue / APP_CONFIG.tokenPriceUsd).toFixed(8));
+      const approveBuy = window.confirm(
+        'Review transaction before opening your wallet:\n\n' +
+        'Amount: ' + amount + ' SOL\n' +
+        'Estimated USD value: ' + formatUsd(estimatedUsdValue) + ' (live SOL market price)\n' +
+        'Estimated token allocation: ' + formatNum(estimatedTokenAmount, 2) + ' ' + APP_CONFIG.tokenSymbol + '\n' +
+        'Price source: ' + (marketState.source || 'Reference') + '\n' +
+        'Destination wallet: ' + APP_CONFIG.treasuryAddress + '\n\n' +
+        'Continue?'
+      );
+      if (!approveBuy) {
+        saleStatus.textContent = 'Transaction cancelled before wallet confirmation.';
+        setDebug(['User cancelled before opening the wallet confirmation popup.']);
+        return;
+      }
+
       let connection, fromPubkey, toPubkey, lamports, latest, transferIx, signature;
       try {
         connection = new window.solanaWeb3.Connection(APP_CONFIG.rpcUrl, 'processed');
@@ -972,7 +1041,7 @@
           lastValidBlockHeight: latest.lastValidBlockHeight
         }, 'processed');
 
-        const usdValue = Number((amount * 150).toFixed(2));
+        const usdValue = estimatedUsdValue;
         const tokenAmount = Number((usdValue / APP_CONFIG.tokenPriceUsd).toFixed(8));
         const items = getHistory();
         items.push({
@@ -985,7 +1054,7 @@
           claimed:false
         });
         setHistory(items);
-        saleStatus.textContent = 'Purchase confirmed and saved locally in this browser.';
+        saleStatus.textContent = 'Purchase confirmed. This browser saved a local record for tracking only.';
         setDebug([
           'Transaction sent successfully.',
           'Signature: ' + String(signature)
@@ -996,7 +1065,7 @@
         setDebug([
           'Error: ' + message,
           'If the wallet popup never appeared, the request likely failed before signing.',
-          'Use the Test Wallet + RPC button above to see whether the RPC is reachable from your browser.'
+          'Check your wallet extension, page HTTPS context and RPC configuration in the browser console.'
         ]);
       }
     }
@@ -1029,7 +1098,7 @@
           ? 'Wallet connected. You can buy during the live presale window.'
           : 'Connect your wallet to participate.';
       } else if (!state.pubkey) {
-        saleStatus.textContent = 'Presale ended. Claim is available for saved local purchases.';
+        saleStatus.textContent = 'Presale ended. The local claim tracker is available for browser-saved purchases.';
       }
 
       const diff = Math.max(0, target.getTime() - now.getTime());
@@ -1063,7 +1132,7 @@
       const items = getHistory();
       const claimable = items.filter(item => !item.claimed);
       if (!claimable.length) {
-        saleStatus.textContent = 'There are no local purchases left to claim.';
+        saleStatus.textContent = 'There are no browser-saved purchases left to mark as claimed.';
         updateClaimUi();
         return;
       }
@@ -1071,7 +1140,7 @@
       localStorage.setItem(LS_KEY, JSON.stringify(items));
       renderHistory();
       updateClaimUi();
-      saleStatus.textContent = 'Local claim completed in this browser.';
+      saleStatus.textContent = 'Local claim status updated in this browser only. No on-chain token distribution was sent.';
     }
 
     async function copyContract() {
@@ -1100,10 +1169,12 @@
       updateCountdown();
 
       if (isMobileDevice()) {
-        mobileWalletNote.textContent = 'Mobile detected. Open this page inside Phantom or Solflare for the most reliable wallet connection.';
+        mobileWalletNote.textContent = 'Mobile detected. Use one wallet app browser for the full flow. Start with Phantom; if it does not work, try Solflare.';
       }
 
+      refreshSolPrice();
       setInterval(updateCountdown, 1000);
+      setInterval(refreshSolPrice, 60000);
     }
 
     amountInput.addEventListener('input', updateQuote);
